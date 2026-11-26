@@ -35,6 +35,9 @@ typedef struct {
     const void *attn_k;
     const void *attn_v;
     const void *attn_output;
+    const void *attn_q_bias;   /* optional QKV biases (Qwen2) */
+    const void *attn_k_bias;
+    const void *attn_v_bias;
     const void *ffn_norm;
     const void *ffn_gate;
     const void *ffn_down;
@@ -45,6 +48,9 @@ typedef struct {
     gguf_type_t type_attn_k;
     gguf_type_t type_attn_v;
     gguf_type_t type_attn_output;
+    gguf_type_t type_attn_q_bias;
+    gguf_type_t type_attn_k_bias;
+    gguf_type_t type_attn_v_bias;
     gguf_type_t type_ffn_norm;
     gguf_type_t type_ffn_gate;
     gguf_type_t type_ffn_down;
@@ -120,6 +126,12 @@ typedef struct {
     uint64_t    tok_n_tokens;
     const void *tok_scores_data;
     uint64_t    tok_n_scores;
+    const void *tok_merges_data;
+    uint64_t    tok_n_merges;
+    const void *tok_pre_data;
+    uint64_t    tok_pre_len;
+    const void *tok_types_data;
+    uint64_t    tok_n_types;
     uint32_t    tok_bos_id;
     uint32_t    tok_eos_id;
 } model_t;

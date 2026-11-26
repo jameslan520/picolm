@@ -267,6 +267,7 @@ void dequantize_row(const void *src, float *dst, int n, gguf_type_t type) {
         case GGUF_TYPE_F32:   dequantize_row_f32(src, dst, n);  break;
         case GGUF_TYPE_F16:   dequantize_row_f16(src, dst, n);  break;
         case GGUF_TYPE_Q4_0:  dequantize_row_q4_0(src, dst, n); break;
+        case GGUF_TYPE_Q5_0:  dequantize_row_q5_0(src, dst, n); break;
         case GGUF_TYPE_Q8_0:  dequantize_row_q8_0(src, dst, n); break;
         case GGUF_TYPE_Q2_K:  dequantize_row_q2_K(src, dst, n); break;
         case GGUF_TYPE_Q3_K:  dequantize_row_q3_K(src, dst, n); break;
@@ -529,6 +530,25 @@ float vec_dot(const void *src, const float *x, int n, gguf_type_t type) {
             float sum = vec_dot_f32_f32(buf, x, n);
             if (buf != tmp) free(buf);
             return sum;
+        }
+    }
+}
+
+/* ---- Q5_0 dequantization ---- */
+void dequantize_row_q5_0(const void *src, float *dst, int n) {
+    const block_q5_0 *blocks = (const block_q5_0 *)src;
+    int nb = n / 32;
+
+    for (int i = 0; i < nb; i++) {
+        float d = fp16_to_fp32(blocks[i].d);
+        uint32_t qh;
+        memcpy(&qh, blocks[i].qh, sizeof(qh));
+        for (int j = 0; j < 32; j++) {
+            uint8_t low;
+            if (j < 16) low = blocks[i].qs[j] & 0xF;
+            else        low = blocks[i].qs[j - 16] >> 4;
+            int q = (int)low | (int)(((qh >> j) & 1u) << 4);
+            dst[i * 32 + j] = d * (float)(q - 16);
         }
     }
 }

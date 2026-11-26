@@ -125,6 +125,8 @@ void matmul(float *out, const float *x, const void *W, int n, int d, gguf_type_t
  * SIMD-accelerated basic operations
  * ================================================================ */
 
+float g_rms_eps = 1e-5f;
+
 void rmsnorm(float *out, const float *x, const float *weight, int size) {
     float ss = 0.0f;
 
@@ -150,7 +152,7 @@ void rmsnorm(float *out, const float *x, const float *weight, int size) {
     for (int i = 0; i < size; i++) ss += x[i] * x[i];
 #endif
 
-    ss = 1.0f / sqrtf(ss / (float)size + 1e-5f);
+    ss = 1.0f / sqrtf(ss / (float)size + g_rms_eps);
 
 #ifdef PICOLM_NEON
     float32x4_t scale = vdupq_n_f32(ss);
@@ -211,46 +213,24 @@ void rope(float *q, float *k, int head_dim, int n_heads, int n_kv_heads,
           const float *cos_pos, const float *sin_pos) {
     int half = head_dim / 2;
 
-    /* Apply RoPE to all query heads */
+    /* NeoX (rotate-half) style: pairs (i, i + half). Matches HF
+     * Llama/Qwen transformers. */
     for (int h = 0; h < n_heads; h++) {
         float *qh = q + h * head_dim;
-#ifdef PICOLM_NEON
-        int i = 0;
-        for (; i + 3 < half; i += 4) {
-            /* Load pairs: (q0,q1), (q2,q3), ... as interleaved */
-            float32x4x2_t qv = vld2q_f32(qh + i * 2);
-            float32x4_t cv = vld1q_f32(cos_pos + i);
-            float32x4_t sv = vld1q_f32(sin_pos + i);
-            /* q_even = q0*cos - q1*sin, q_odd = q0*sin + q1*cos */
-            float32x4_t new_even = vmlsq_f32(vmulq_f32(qv.val[0], cv), qv.val[1], sv);
-            float32x4_t new_odd  = vmlaq_f32(vmulq_f32(qv.val[0], sv), qv.val[1], cv);
-            float32x4x2_t result = {{ new_even, new_odd }};
-            vst2q_f32(qh + i * 2, result);
-        }
-        for (; i < half; i++) {
-            float q0 = qh[i * 2];
-            float q1 = qh[i * 2 + 1];
-            qh[i * 2]     = q0 * cos_pos[i] - q1 * sin_pos[i];
-            qh[i * 2 + 1] = q0 * sin_pos[i] + q1 * cos_pos[i];
-        }
-#else
         for (int i = 0; i < half; i++) {
-            float q0 = qh[i * 2];
-            float q1 = qh[i * 2 + 1];
-            qh[i * 2]     = q0 * cos_pos[i] - q1 * sin_pos[i];
-            qh[i * 2 + 1] = q0 * sin_pos[i] + q1 * cos_pos[i];
+            float q0 = qh[i];
+            float q1 = qh[i + half];
+            qh[i]         = q0 * cos_pos[i] - q1 * sin_pos[i];
+            qh[i + half] = q0 * sin_pos[i] + q1 * cos_pos[i];
         }
-#endif
     }
-
-    /* Apply RoPE to all KV heads */
     for (int h = 0; h < n_kv_heads; h++) {
         float *kh = k + h * head_dim;
         for (int i = 0; i < half; i++) {
-            float k0 = kh[i * 2];
-            float k1 = kh[i * 2 + 1];
-            kh[i * 2]     = k0 * cos_pos[i] - k1 * sin_pos[i];
-            kh[i * 2 + 1] = k0 * sin_pos[i] + k1 * cos_pos[i];
+            float k0 = kh[i];
+            float k1 = kh[i + half];
+            kh[i]         = k0 * cos_pos[i] - k1 * sin_pos[i];
+            kh[i + half] = k0 * sin_pos[i] + k1 * cos_pos[i];
         }
     }
 }

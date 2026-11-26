@@ -101,6 +101,15 @@ typedef struct {
     uint16_t d;          /* scale (FP16) */
     uint8_t  qs[16];     /* 4-bit quantized values */
 } block_q4_0;            /* 18 bytes */
+
+/* Q5_0 block: 32 weights */
+#pragma pack(push, 1)
+typedef struct {
+    uint16_t d;          /* scale (FP16) */
+    uint8_t  qh[4];      /* high bits of quants */
+    uint8_t  qs[16];     /* low 4 bits of quants */
+} block_q5_0;            /* 22 bytes */
+#pragma pack(pop)
 #pragma pack(pop)
 
 /* ---- FP16 conversion ---- */
@@ -114,6 +123,7 @@ void dequantize_row_q2_K(const void *src, float *dst, int n);
 void dequantize_row_q8_0(const void *src, float *dst, int n);
 void dequantize_row_q6_K(const void *src, float *dst, int n);
 void dequantize_row_q4_0(const void *src, float *dst, int n);
+void dequantize_row_q5_0(const void *src, float *dst, int n);
 void dequantize_row_f16(const void *src, float *dst, int n);
 void dequantize_row_f32(const void *src, float *dst, int n);
 

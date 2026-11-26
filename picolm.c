@@ -176,6 +176,12 @@ int main(int argc, char **argv) {
         fprintf(stderr, "Skipping %d cached prompt tokens\n", start_pos);
     }
 
+    if (getenv("PICOLM_DEBUG_TOKENS")) {
+        fprintf(stderr, "Prompt tokens:");
+        for (int i = 0; i < n_prompt; i++)
+            fprintf(stderr, " [%d:%s]", prompt_tokens[i], tokenizer_decode(&tokenizer, i > 0 ? prompt_tokens[i-1] : -1, prompt_tokens[i]));
+        fprintf(stderr, "\n");
+    }
     fprintf(stderr, "Prompt: %d tokens, generating up to %d (temp=%.2f, top_p=%.2f, threads=%d)\n",
             n_prompt, max_tokens, temperature, top_p, num_threads);
     fprintf(stderr, "---\n");
@@ -202,6 +208,20 @@ int main(int argc, char **argv) {
 
         /* Forward pass */
         float *logits = model_forward(&model, token, pos);
+
+        if (pos == n_prompt - 1 && getenv("PICOLM_DEBUG_TOKENS")) {
+            float *dbg = (float *)malloc(sizeof(float) * model.config.vocab_size);
+            memcpy(dbg, logits, sizeof(float) * model.config.vocab_size);
+            for (int pick = 0; pick < 5; pick++) {
+                int bi = -1; float bv = -1e30f;
+                for (int v = 0; v < model.config.vocab_size; v++)
+                    if (dbg[v] > bv) { bv = dbg[v]; bi = v; }
+                fprintf(stderr, "logit_top%d: id=%d [%s] = %.4f\n", pick + 1, bi,
+                        tokenizer_decode(&tokenizer, token, bi), bv);
+                if (bi >= 0) dbg[bi] = -1e30f;
+            }
+            free(dbg);
+        }
 
         int next;
         if (pos < n_prompt - 1) {

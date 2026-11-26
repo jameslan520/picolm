@@ -230,6 +230,13 @@ static int parse_gguf(model_t *m, int max_seq_len) {
 
     for (uint64_t i = 0; i < n_metadata; i++) {
         gguf_str_t key = read_gguf_string(&r);
+        /* Normalize qwen2.* arch prefix to llama.* (same schema) */
+        char nkey[128];
+        if (key.len > 0 && key.len < sizeof(nkey)) {
+            memcpy(nkey, key.str, key.len); nkey[key.len] = 0;
+            if (strncmp(nkey, "qwen2.", 6) == 0) memcpy(nkey, "llama.", 6);
+            key = (gguf_str_t){ nkey, key.len };
+        }
         uint32_t vtype = read_u32(&r);
 
         if (str_eq(key, "llama.embedding_length") || str_eq(key, "general.embedding_length")) {
@@ -244,6 +251,12 @@ static int parse_gguf(model_t *m, int max_seq_len) {
             int dummy; cfg->n_layers = (int)skip_meta_value(&r, vtype, &dummy);
         } else if (str_eq(key, "llama.context_length")) {
             int dummy; cfg->max_seq_len = (int)skip_meta_value(&r, vtype, &dummy);
+        } else if (str_eq(key, "llama.attention.layer_norm_rms_epsilon")) {
+            if (vtype == GGUF_META_FLOAT32) {
+                g_rms_eps = read_f32(&r);
+            } else {
+                int dummy; skip_meta_value(&r, vtype, &dummy);
+            }
         } else if (str_eq(key, "llama.rope.freq_base")) {
             if (vtype == GGUF_META_FLOAT32) {
                 cfg->rope_freq_base = read_f32(&r);
@@ -271,6 +284,40 @@ static int parse_gguf(model_t *m, int max_seq_len) {
                     skip_meta_value(&r, arr_type, &dummy);
                 }
             }
+        } else if (str_eq(key, "tokenizer.ggml.token_type")) {
+            if (vtype != GGUF_META_ARRAY) {
+                int dummy; skip_meta_value(&r, vtype, &dummy);
+            } else {
+                uint32_t arr_type = read_u32(&r);
+                uint64_t arr_len  = read_u64(&r);
+                m->tok_types_data = r.data + r.pos;
+                m->tok_n_types = arr_len;
+                int dummy;
+                for (uint64_t j = 0; j < arr_len; j++) {
+                    skip_meta_value(&r, arr_type, &dummy);
+                }
+            }
+        } else if (str_eq(key, "tokenizer.ggml.merges")) {
+            if (vtype != GGUF_META_ARRAY) {
+                int dummy; skip_meta_value(&r, vtype, &dummy);
+            } else {
+                uint32_t arr_type = read_u32(&r);
+                uint64_t arr_len  = read_u64(&r);
+                m->tok_merges_data = r.data + r.pos;
+                m->tok_n_merges = arr_len;
+                int dummy;
+                for (uint64_t j = 0; j < arr_len; j++) {
+                    skip_meta_value(&r, arr_type, &dummy);
+                }
+            }
+        } else if (str_eq(key, "tokenizer.ggml.pre")) {
+            if (vtype == GGUF_META_STRING) {
+                gguf_str_t sv = read_gguf_string(&r);
+                m->tok_pre_data = sv.str;
+                m->tok_pre_len = sv.len;
+            } else {
+                int dummy; skip_meta_value(&r, vtype, &dummy);
+            }
         } else if (str_eq(key, "tokenizer.ggml.scores")) {
             if (vtype != GGUF_META_ARRAY) {
                 int dummy; skip_meta_value(&r, vtype, &dummy);
@@ -290,7 +337,7 @@ static int parse_gguf(model_t *m, int max_seq_len) {
     if (max_seq_len > 0 && max_seq_len < cfg->max_seq_len) {
         cfg->max_seq_len = max_seq_len;
     }
-    cfg->head_dim = cfg->n_embd / cfg->n_heads;
+    cfg->head_dim = (cfg->n_heads > 0) ? (cfg->n_embd / cfg->n_heads) : 0;
 
     /* Parse tensor info entries */
     typedef struct {
@@ -364,6 +411,12 @@ static int parse_gguf(model_t *m, int max_seq_len) {
                     lw->attn_v = ptr; lw->type_attn_v = qtype;
                 } else if (strcmp(suffix, "attn_output.weight") == 0) {
                     lw->attn_output = ptr; lw->type_attn_output = qtype;
+                } else if (strcmp(suffix, "attn_q.bias") == 0) {
+                    lw->attn_q_bias = ptr; lw->type_attn_q_bias = qtype;
+                } else if (strcmp(suffix, "attn_k.bias") == 0) {
+                    lw->attn_k_bias = ptr; lw->type_attn_k_bias = qtype;
+                } else if (strcmp(suffix, "attn_v.bias") == 0) {
+                    lw->attn_v_bias = ptr; lw->type_attn_v_bias = qtype;
                 } else if (strcmp(suffix, "ffn_norm.weight") == 0) {
                     lw->ffn_norm = ptr; lw->type_ffn_norm = qtype;
                 } else if (strcmp(suffix, "ffn_gate.weight") == 0) {
@@ -398,6 +451,16 @@ static int parse_gguf(model_t *m, int max_seq_len) {
         cfg->vocab_size = (int)m->tok_n_tokens;
     }
 
+    if (getenv("PICOLM_DEBUG_TOKENS")) {
+        fprintf(stderr, "dbg: L0 q_bias=%p(type %d) k_bias=%p(type %d) v_bias=%p(type %d)\n",
+            (void*)w->layers[0].attn_q_bias, (int)w->layers[0].type_attn_q_bias,
+            (void*)w->layers[0].attn_k_bias, (int)w->layers[0].type_attn_k_bias,
+            (void*)w->layers[0].attn_v_bias, (int)w->layers[0].type_attn_v_bias);
+        int nbias = 0;
+        for (int li = 0; li < cfg->n_layers; li++)
+            if (w->layers[li].attn_q_bias && w->layers[li].attn_k_bias && w->layers[li].attn_v_bias) nbias++;
+        fprintf(stderr, "dbg: layers with all 3 biases: %d/%d\n", nbias, cfg->n_layers);
+    }
     cfg->weight_type = w->layers[0].type_attn_q;
 
     fprintf(stderr, "Model config:\n");
@@ -587,10 +650,14 @@ float *model_forward(model_t *m, int token, int pos) {
 
         /* QKV projections */
         matmul(s->q, s->xb, lw->attn_q, dim, dim, lw->type_attn_q);
+        if (lw->attn_q_bias && lw->type_attn_q_bias == GGUF_TYPE_F32)
+            vec_add(s->q, (const float *)lw->attn_q_bias, dim);
 
         /* K and V: project into float temp, then store as FP16 in cache */
         float *k_tmp = s->xb2; /* reuse xb2 as temp for K (kv_dim <= dim) */
         matmul(k_tmp, s->xb, lw->attn_k, dim, kv_dim, lw->type_attn_k);
+        if (lw->attn_k_bias && lw->type_attn_k_bias == GGUF_TYPE_F32)
+            vec_add(k_tmp, (const float *)lw->attn_k_bias, kv_dim);
 
         /* Store K as FP16 */
         uint16_t *kcache_layer = s->key_cache + (size_t)l * seq_len * kv_dim;
@@ -608,6 +675,8 @@ float *model_forward(model_t *m, int token, int pos) {
         /* V projection -> store directly as FP16 */
         float *v_tmp = s->xb2;
         matmul(v_tmp, s->xb, lw->attn_v, dim, kv_dim, lw->type_attn_v);
+        if (lw->attn_v_bias && lw->type_attn_v_bias == GGUF_TYPE_F32)
+            vec_add(v_tmp, (const float *)lw->attn_v_bias, kv_dim);
         uint16_t *val_pos_fp16 = vcache_layer + (size_t)pos * kv_dim;
         for (int d = 0; d < kv_dim; d++) {
             val_pos_fp16[d] = fp32_to_fp16(v_tmp[d]);

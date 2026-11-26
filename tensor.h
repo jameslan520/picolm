@@ -1,6 +1,8 @@
 #ifndef TENSOR_H
 #define TENSOR_H
 
+extern float g_rms_eps;
+
 #include "quant.h"
 
 #define MAX_THREADS 16
